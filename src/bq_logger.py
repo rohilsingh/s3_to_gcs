@@ -96,6 +96,7 @@ def insert_error_log(
     etag: str, gcs_key: str, attempt: int, error_class: str,
     error_detail: str, retryable: bool = True, waiting: bool = False,
     predecessor_s3_key: str = None, predecessor_last_modified: str = None,
+    step: str = None,
 ) -> bool:
     row = {
         "run_id": run_id,
@@ -106,6 +107,7 @@ def insert_error_log(
         "gcs_key": gcs_key,
         "attempt": attempt,
         "waiting": waiting,
+        "step": step,
         "error_class": error_class,
         "error_detail": error_detail,
         "predecessor_s3_key": predecessor_s3_key,

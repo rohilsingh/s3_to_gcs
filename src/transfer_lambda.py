@@ -117,6 +117,7 @@ def _process_record(record: dict):
             waiting=True, retryable=True,
             predecessor_s3_key=pred_s3_key,
             predecessor_last_modified=pred_last_modified,
+            step="transfer_lambda._process_record.check_predecessor",
         )
         if not ok:
             write_failure_marker(
@@ -124,6 +125,7 @@ def _process_record(record: dict):
                 last_modified, etag, gcs_key,
                 "ORDER_BLOCKED",
                 f"Waiting on predecessor: {pred_s3_key}",
+                step="transfer_lambda._process_record.check_predecessor",
             )
         return
 
@@ -138,6 +140,7 @@ def _process_record(record: dict):
             run_id, file_id, s3_key, last_modified, etag, gcs_key,
             attempt, "S3_READ", str(e), True, source_bucket, bq_ok,
             pred_s3_key, pred_last_modified,
+            step="transfer_lambda._process_record.get_s3_stream",
         )
         return
     except Exception as e:
@@ -145,6 +148,7 @@ def _process_record(record: dict):
             run_id, file_id, s3_key, last_modified, etag, gcs_key,
             attempt, "S3_READ", str(e), True, source_bucket, bq_ok,
             pred_s3_key, pred_last_modified,
+            step="transfer_lambda._process_record.get_s3_stream",
         )
         return
 
@@ -155,6 +159,7 @@ def _process_record(record: dict):
             run_id, file_id, s3_key, last_modified, etag, gcs_key,
             attempt, "GCS_WRITE", str(e), True, source_bucket, bq_ok,
             pred_s3_key, pred_last_modified,
+            step="transfer_lambda._process_record.stream_to_gcs",
         )
         return
 
@@ -168,6 +173,7 @@ def _process_record(record: dict):
                 run_id, file_id, s3_key, last_modified, etag, gcs_key,
                 attempt, "ARCHIVE", str(e), True, source_bucket, bq_ok,
                 pred_s3_key, pred_last_modified,
+                step="transfer_lambda._process_record.self_archive",
             )
             return
 
@@ -192,8 +198,9 @@ def _log_error(
     run_id, file_id, s3_key, last_modified, etag, gcs_key,
     attempt, error_class, error_detail, retryable,
     source_bucket, bq_ok, pred_s3_key=None, pred_last_modified=None,
+    step=None,
 ):
-    logger.error("%s error for %s: %s", error_class, s3_key, error_detail)
+    logger.error("[%s] %s error for %s: %s", step, error_class, s3_key, error_detail)
     ok = insert_error_log(
         run_id=run_id, file_id=file_id, s3_key=s3_key,
         last_modified=last_modified, etag=etag, gcs_key=gcs_key,
@@ -201,9 +208,11 @@ def _log_error(
         error_detail=error_detail, retryable=retryable,
         predecessor_s3_key=pred_s3_key,
         predecessor_last_modified=pred_last_modified,
+        step=step,
     )
     if not ok:
         write_failure_marker(
             source_bucket, run_id, file_id, s3_key,
             last_modified, etag, gcs_key, error_class, error_detail,
+            step=step,
         )

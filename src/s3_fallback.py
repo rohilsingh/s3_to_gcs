@@ -39,7 +39,7 @@ def write_success_marker(
 def write_failure_marker(
     bucket: str, run_id: str, file_id: int, s3_key: str,
     last_modified: str, etag: str, gcs_key: str,
-    error_class: str, error_detail: str,
+    error_class: str, error_detail: str, step: str = None,
 ):
     body = {
         "run_id": run_id,
@@ -48,6 +48,7 @@ def write_failure_marker(
         "last_modified": last_modified,
         "etag": etag,
         "gcs_key": gcs_key,
+        "step": step,
         "error_class": error_class,
         "error_detail": error_detail,
         "written_at": datetime.now(timezone.utc).isoformat(),

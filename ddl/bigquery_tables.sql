@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET}.error_log` (
     gcs_key                   STRING,
     attempt                   INT64     NOT NULL DEFAULT 1,
     waiting                   BOOL      NOT NULL DEFAULT FALSE,
+    step                      STRING,              -- pipeline step where error occurred (e.g. 'transfer_lambda._process_record.get_s3_stream')
     error_class               STRING    NOT NULL,  -- S3_READ | GCS_WRITE | BQ | ARCHIVE | CONFIG | ORDER_BLOCKED
     error_detail              STRING,
     predecessor_s3_key        STRING,

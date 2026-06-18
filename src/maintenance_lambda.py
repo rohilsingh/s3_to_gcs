@@ -74,6 +74,7 @@ def _reconcile_fallback_markers():
                 error_class=marker.get("error_class", "UNKNOWN"),
                 error_detail=marker.get("error_detail", ""),
                 retryable=True,
+                step=marker.get("step", "reconciled_from_s3_marker"),
             )
             if ok:
                 delete_marker(bucket, marker["_marker_key"])
@@ -370,6 +371,7 @@ def _try_transfer(
             waiting=True, retryable=True,
             predecessor_s3_key=predecessor_s3_key,
             predecessor_last_modified=predecessor_last_modified,
+            step="maintenance._try_transfer.check_predecessor",
         )
         return
 
@@ -393,6 +395,7 @@ def _try_transfer(
             last_modified=last_modified, etag=etag, gcs_key=gcs_key,
             attempt=attempt, error_class="S3_READ", error_detail=str(e),
             retryable=True,
+            step="maintenance._try_transfer.get_s3_stream",
         )
         return
     except Exception as e:
@@ -401,6 +404,7 @@ def _try_transfer(
             last_modified=last_modified, etag=etag, gcs_key=gcs_key,
             attempt=attempt, error_class="S3_READ", error_detail=str(e),
             retryable=True,
+            step="maintenance._try_transfer.get_s3_stream",
         )
         return
 
@@ -412,6 +416,7 @@ def _try_transfer(
             last_modified=last_modified, etag=etag, gcs_key=gcs_key,
             attempt=attempt, error_class="GCS_WRITE", error_detail=str(e),
             retryable=True,
+            step="maintenance._try_transfer.stream_to_gcs",
         )
         return
 
@@ -426,6 +431,7 @@ def _try_transfer(
                 last_modified=last_modified, etag=etag, gcs_key=gcs_key,
                 attempt=attempt, error_class="ARCHIVE", error_detail=str(e),
                 retryable=True,
+                step="maintenance._try_transfer.self_archive",
             )
             return
 

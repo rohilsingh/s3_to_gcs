@@ -154,6 +154,7 @@ def _do_transfer(pattern: dict, s3_key: str, last_modified: str, etag: str):
             waiting=True, retryable=True,
             predecessor_s3_key=pred_s3_key,
             predecessor_last_modified=pred_last_modified,
+            step="backfill._do_transfer.check_predecessor",
         )
         return
 
@@ -177,6 +178,7 @@ def _do_transfer(pattern: dict, s3_key: str, last_modified: str, etag: str):
             last_modified=last_modified, etag=etag, gcs_key=gcs_key,
             attempt=1, error_class="S3_READ", error_detail=str(e),
             retryable=True,
+            step="backfill._do_transfer.get_s3_stream",
         )
         return
 
@@ -188,6 +190,7 @@ def _do_transfer(pattern: dict, s3_key: str, last_modified: str, etag: str):
             last_modified=last_modified, etag=etag, gcs_key=gcs_key,
             attempt=1, error_class="GCS_WRITE", error_detail=str(e),
             retryable=True,
+            step="backfill._do_transfer.stream_to_gcs",
         )
         return
 
@@ -202,6 +205,7 @@ def _do_transfer(pattern: dict, s3_key: str, last_modified: str, etag: str):
                 last_modified=last_modified, etag=etag, gcs_key=gcs_key,
                 attempt=1, error_class="ARCHIVE", error_detail=str(e),
                 retryable=True,
+                step="backfill._do_transfer.self_archive",
             )
             return
 
