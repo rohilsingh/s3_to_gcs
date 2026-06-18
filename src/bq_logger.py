@@ -184,6 +184,30 @@ def check_predecessor_success(file_id: int, s3_key: str, last_modified: str) -> 
         return False
 
 
+def check_run_log_exists(file_id: int, s3_key: str, last_modified: str) -> bool:
+    try:
+        client = _get_client()
+        query = f"""
+            SELECT 1 FROM `{bq_table_ref(RUN_LOG_TABLE)}`
+            WHERE file_id = @file_id
+              AND s3_key = @s3_key
+              AND last_modified = @last_modified
+            LIMIT 1
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("file_id", "INT64", file_id),
+                bigquery.ScalarQueryParameter("s3_key", "STRING", s3_key),
+                bigquery.ScalarQueryParameter("last_modified", "TIMESTAMP", last_modified),
+            ]
+        )
+        result = client.query(query, job_config=job_config).result()
+        return result.total_rows > 0
+    except GoogleAPIError:
+        logger.exception("BQ unreachable checking run_log")
+        return False
+
+
 def get_latest_attempt(file_id: int, s3_key: str, last_modified: str, etag: str) -> int:
     try:
         client = _get_client()

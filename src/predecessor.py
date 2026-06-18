@@ -7,7 +7,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from src.config import BUCKET_SHORT_NAMES, FALLBACK_PREFIX
-from src.bq_logger import check_predecessor_success
+from src.bq_logger import check_predecessor_success, check_run_log_exists
 from src.s3_fallback import check_predecessor_success_marker
 
 logger = logging.getLogger(__name__)
@@ -104,4 +104,15 @@ def is_predecessor_done(
     ):
         return True
 
-    return check_predecessor_success(file_id, pred_s3_key, pred_last_modified)
+    if check_predecessor_success(file_id, pred_s3_key, pred_last_modified):
+        return True
+
+    if not check_run_log_exists(file_id, pred_s3_key, pred_last_modified):
+        logger.info(
+            "Predecessor %s (last_modified=%s) has no run_log entry — "
+            "predates our system, treating as done",
+            pred_s3_key, pred_last_modified,
+        )
+        return True
+
+    return False
