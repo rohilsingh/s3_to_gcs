@@ -6,7 +6,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from src.config import BUCKET_SHORT_NAMES
-from src.control_table_cache import get_cache
+from src.control_table_cache import get_pattern_by_file_id
 from src.gcs_key import build_gcs_key
 from src.bq_logger import (
     insert_run_log, insert_success_log, insert_error_log,
@@ -21,8 +21,7 @@ _s3 = boto3.client("s3")
 
 
 def replay_single(file_id: int, s3_key: str, last_modified: str, etag: str):
-    cache = get_cache()
-    pattern = _find_pattern(cache, file_id)
+    pattern = get_pattern_by_file_id(file_id)
     if not pattern:
         logger.error("No pattern found for file_id=%d", file_id)
         return
@@ -31,8 +30,7 @@ def replay_single(file_id: int, s3_key: str, last_modified: str, etag: str):
 
 
 def replay_range(file_id: int, start_date: str, end_date: str):
-    cache = get_cache()
-    pattern = _find_pattern(cache, file_id)
+    pattern = get_pattern_by_file_id(file_id)
     if not pattern:
         logger.error("No pattern found for file_id=%d", file_id)
         return
@@ -81,13 +79,6 @@ def backfill_handler(event, context):
     else:
         logger.error("Unknown backfill action: %s", action)
 
-
-def _find_pattern(cache: dict, file_id: int):
-    for patterns in cache.values():
-        for p in patterns:
-            if p["file_id"] == file_id:
-                return p
-    return None
 
 
 def _list_matching_objects(

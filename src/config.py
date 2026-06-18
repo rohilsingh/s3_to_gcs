@@ -10,7 +10,6 @@ SUCCESS_LOG_TABLE = os.environ.get("success_log_table", "success_log")
 ERROR_LOG_TABLE = os.environ.get("error_log_table", "error_log")
 ALERT_LOG_TABLE = os.environ.get("alert_log_table", "alert_log")
 
-CACHE_TTL_SECONDS = int(os.environ.get("cache_ttl_seconds", "600"))
 RETRY_COOLDOWN_MINUTES = int(os.environ.get("retry_cooldown_minutes", "20"))
 
 FALLBACK_PREFIX = os.environ.get("fallback_prefix", "_transfer_fallback")

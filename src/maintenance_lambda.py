@@ -11,7 +11,7 @@ from src.config import (
     RUN_LOG_TABLE, SUCCESS_LOG_TABLE, ERROR_LOG_TABLE, ALERT_LOG_TABLE,
     RETRY_COOLDOWN_MINUTES,
 )
-from src.control_table_cache import get_cache, match_pattern
+from src.control_table_cache import get_all_source_buckets, get_pattern_by_file_id
 from src.gcs_key import build_gcs_key
 from src.bq_logger import (
     insert_run_log, insert_success_log, insert_error_log, insert_alert_log,
@@ -41,11 +41,7 @@ def handler(event, context):
 
 # ── PF-5: Reconcile S3 fallback markers into BQ ─────────────────────────
 def _reconcile_fallback_markers():
-    cache = get_cache()
-    all_buckets = set()
-    for patterns in cache.values():
-        for p in patterns:
-            all_buckets.add(p["source_bucket_name"])
+    all_buckets = get_all_source_buckets()
 
     for bucket in all_buckets:
         for marker in list_markers(bucket, "success"):
@@ -332,15 +328,7 @@ def _try_transfer(
     gcs_key: str, attempt: int,
     predecessor_s3_key: str = None, predecessor_last_modified: str = None,
 ):
-    cache = get_cache()
-    pattern = None
-    for patterns in cache.values():
-        for p in patterns:
-            if p["file_id"] == file_id:
-                pattern = p
-                break
-        if pattern:
-            break
+    pattern = get_pattern_by_file_id(file_id)
 
     if not pattern:
         logger.warning("No pattern found for file_id=%d, skipping", file_id)
