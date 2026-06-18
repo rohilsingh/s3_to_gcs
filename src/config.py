@@ -14,6 +14,9 @@ RETRY_COOLDOWN_MINUTES = int(os.environ.get("retry_cooldown_minutes", "20"))
 
 FALLBACK_PREFIX = os.environ.get("fallback_prefix", "_transfer_fallback")
 
+EVENTBRIDGE_BUS_NAME = os.environ.get("eventbridge_bus_name", "default")
+EVENTBRIDGE_SOURCE = os.environ.get("eventbridge_source", "s3-gcs-transfer.maintenance")
+
 SERVICENOW_SECRET_NAME = os.environ.get("servicenow_secret_name", "servicenow-credentials")
 SERVICENOW_INSTANCE_URL = os.environ.get("servicenow_instance_url", "")
 

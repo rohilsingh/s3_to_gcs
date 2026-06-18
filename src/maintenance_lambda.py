@@ -2,6 +2,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 
+import boto3
 from google.cloud import bigquery
 from google.auth import load_credentials_from_file
 from google.api_core.exceptions import GoogleAPIError
@@ -9,24 +10,19 @@ from google.api_core.exceptions import GoogleAPIError
 from src.config import (
     GCP_PROJECT_ID, WIF_CREDENTIAL_FILE, bq_table_ref,
     RUN_LOG_TABLE, SUCCESS_LOG_TABLE, ERROR_LOG_TABLE, ALERT_LOG_TABLE,
-    RETRY_COOLDOWN_MINUTES,
+    RETRY_COOLDOWN_MINUTES, EVENTBRIDGE_BUS_NAME, EVENTBRIDGE_SOURCE,
 )
 from src.control_table_cache import get_all_source_buckets, get_pattern_by_file_id
-from src.gcs_key import build_gcs_key
 from src.bq_logger import (
-    insert_run_log, insert_success_log, insert_error_log, insert_alert_log,
-    check_success_exists,
+    insert_success_log, insert_error_log, insert_alert_log,
 )
-from src.s3_fallback import (
-    list_markers, delete_marker, check_success_marker_exists,
-)
-from src.streaming_copy import get_s3_stream, stream_to_gcs
-from src.predecessor import resolve_predecessor, is_predecessor_done
-from src.archival import self_archive
+from src.s3_fallback import list_markers, delete_marker
 from src.servicenow import create_incident, update_incident
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+_eb_client = boto3.client("events")
 
 
 def handler(event, context):
@@ -37,6 +33,35 @@ def handler(event, context):
     _gap_detection()
     _servicenow_alerts()
     logger.info("Maintenance Lambda complete")
+
+
+# ── Emit EventBridge event so Transfer Lambda handles the actual copy ────
+def _emit_transfer_event(
+    source_bucket: str, s3_key: str, last_modified: str,
+    etag: str, size_bytes: int = 0,
+):
+    import json
+    entry = {
+        "Source": EVENTBRIDGE_SOURCE,
+        "DetailType": "MaintenanceRetry",
+        "Detail": json.dumps({
+            "bucket": {"name": source_bucket},
+            "object": {
+                "key": s3_key,
+                "etag": etag,
+                "size": size_bytes,
+            },
+        }),
+        "Time": last_modified,
+        "EventBusName": EVENTBRIDGE_BUS_NAME,
+    }
+    resp = _eb_client.put_events(Entries=[entry])
+    failed = resp.get("FailedEntryCount", 0)
+    if failed:
+        logger.error("Failed to emit EventBridge event for %s: %s", s3_key, resp)
+    else:
+        logger.info("Emitted EventBridge retry event for %s", s3_key)
+    return failed == 0
 
 
 # ── PF-5: Reconcile S3 fallback markers into BQ ─────────────────────────
@@ -84,9 +109,7 @@ def _advance_waiting():
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=RETRY_COOLDOWN_MINUTES)).isoformat()
 
     query = f"""
-        SELECT e.run_id, e.file_id, e.s3_key, e.last_modified, e.etag,
-               e.gcs_key, e.attempt, e.predecessor_s3_key,
-               e.predecessor_last_modified
+        SELECT e.file_id, e.s3_key, e.last_modified, e.etag
         FROM `{bq_table_ref(ERROR_LOG_TABLE)}` e
         LEFT JOIN `{bq_table_ref(SUCCESS_LOG_TABLE)}` s
           ON e.file_id = s.file_id
@@ -109,23 +132,22 @@ def _advance_waiting():
         logger.exception("Failed to query WAITING items")
         return
 
+    emitted = 0
     for row in rows:
-        _try_transfer(
-            file_id=row.file_id,
+        pattern = get_pattern_by_file_id(row.file_id)
+        if not pattern:
+            logger.warning("No pattern for file_id=%d, skipping", row.file_id)
+            continue
+        lm_str = row.last_modified.isoformat() if hasattr(row.last_modified, 'isoformat') else str(row.last_modified)
+        if _emit_transfer_event(
+            source_bucket=pattern["source_bucket_name"],
             s3_key=row.s3_key,
-            last_modified=row.last_modified.isoformat() if hasattr(row.last_modified, 'isoformat') else str(row.last_modified),
+            last_modified=lm_str,
             etag=row.etag or "",
-            gcs_key=row.gcs_key or "",
-            attempt=row.attempt + 1,
-            predecessor_s3_key=row.predecessor_s3_key,
-            predecessor_last_modified=(
-                row.predecessor_last_modified.isoformat()
-                if row.predecessor_last_modified and hasattr(row.predecessor_last_modified, 'isoformat')
-                else row.predecessor_last_modified
-            ),
-        )
+        ):
+            emitted += 1
 
-    logger.info("Advance-WAITING complete, processed %d items", len(rows))
+    logger.info("Advance-WAITING complete, emitted %d / %d events", emitted, len(rows))
 
 
 # ── Retry FAILED files (non-waiting, last attempt > 20 min ago) ──────────
@@ -134,9 +156,7 @@ def _retry_failed():
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=RETRY_COOLDOWN_MINUTES)).isoformat()
 
     query = f"""
-        SELECT e.run_id, e.file_id, e.s3_key, e.last_modified, e.etag,
-               e.gcs_key, e.attempt, e.predecessor_s3_key,
-               e.predecessor_last_modified
+        SELECT e.file_id, e.s3_key, e.last_modified, e.etag
         FROM `{bq_table_ref(ERROR_LOG_TABLE)}` e
         LEFT JOIN `{bq_table_ref(SUCCESS_LOG_TABLE)}` s
           ON e.file_id = s.file_id
@@ -160,23 +180,22 @@ def _retry_failed():
         logger.exception("Failed to query FAILED items")
         return
 
+    emitted = 0
     for row in rows:
-        _try_transfer(
-            file_id=row.file_id,
+        pattern = get_pattern_by_file_id(row.file_id)
+        if not pattern:
+            logger.warning("No pattern for file_id=%d, skipping", row.file_id)
+            continue
+        lm_str = row.last_modified.isoformat() if hasattr(row.last_modified, 'isoformat') else str(row.last_modified)
+        if _emit_transfer_event(
+            source_bucket=pattern["source_bucket_name"],
             s3_key=row.s3_key,
-            last_modified=row.last_modified.isoformat() if hasattr(row.last_modified, 'isoformat') else str(row.last_modified),
+            last_modified=lm_str,
             etag=row.etag or "",
-            gcs_key=row.gcs_key or "",
-            attempt=row.attempt + 1,
-            predecessor_s3_key=row.predecessor_s3_key,
-            predecessor_last_modified=(
-                row.predecessor_last_modified.isoformat()
-                if row.predecessor_last_modified and hasattr(row.predecessor_last_modified, 'isoformat')
-                else row.predecessor_last_modified
-            ),
-        )
+        ):
+            emitted += 1
 
-    logger.info("Retry-FAILED complete, processed %d items", len(rows))
+    logger.info("Retry-FAILED complete, emitted %d / %d events", emitted, len(rows))
 
 
 # ── PF-7: Gap detection ─────────────────────────────────────────────────
@@ -204,8 +223,6 @@ def _gap_detection():
 
     for row in waiting_rows:
         pred_key = row.predecessor_s3_key
-        pred_lm = row.predecessor_last_modified
-
         if not pred_key:
             continue
 
@@ -320,116 +337,6 @@ def _servicenow_alerts():
                 )
 
     logger.info("ServiceNow alerts complete")
-
-
-# ── Shared transfer logic (used by advance-waiting and retry-failed) ─────
-def _try_transfer(
-    file_id: int, s3_key: str, last_modified: str, etag: str,
-    gcs_key: str, attempt: int,
-    predecessor_s3_key: str = None, predecessor_last_modified: str = None,
-):
-    pattern = get_pattern_by_file_id(file_id)
-
-    if not pattern:
-        logger.warning("No pattern found for file_id=%d, skipping", file_id)
-        return
-
-    source_bucket = pattern["source_bucket_name"]
-    gcs_bucket = pattern["destination_bucket_name"]
-    archive_bucket = pattern.get("archive_to_bucket", "")
-    if not gcs_key:
-        gcs_key = build_gcs_key(s3_key, pattern)
-
-    run_id = str(uuid.uuid4())
-    started_at = datetime.now(timezone.utc).isoformat()
-
-    if check_success_exists(file_id, s3_key, last_modified, etag):
-        logger.info("Already succeeded, skipping maintenance retry: %s", s3_key)
-        return
-
-    if predecessor_s3_key and not is_predecessor_done(
-        file_id, predecessor_s3_key, predecessor_last_modified, source_bucket
-    ):
-        logger.info("Predecessor still not done for %s, re-marking WAITING", s3_key)
-        insert_error_log(
-            run_id=run_id, file_id=file_id, s3_key=s3_key,
-            last_modified=last_modified, etag=etag, gcs_key=gcs_key,
-            attempt=attempt, error_class="ORDER_BLOCKED",
-            error_detail=f"Still waiting on predecessor: {predecessor_s3_key}",
-            waiting=True, retryable=True,
-            predecessor_s3_key=predecessor_s3_key,
-            predecessor_last_modified=predecessor_last_modified,
-            step="maintenance._try_transfer.check_predecessor",
-        )
-        return
-
-    insert_run_log(
-        run_id=run_id, file_id=file_id, s3_key=s3_key,
-        last_modified=last_modified, etag=etag, size_bytes=0,
-        gcs_key=gcs_key, attempt=attempt, trigger_source="maintenance",
-        predecessor_s3_key=predecessor_s3_key,
-        predecessor_last_modified=predecessor_last_modified,
-        started_at=started_at,
-    )
-
-    try:
-        lm_dt = datetime.fromisoformat(last_modified) if isinstance(last_modified, str) else last_modified
-        s3_stream, actual_size, read_from_archive = get_s3_stream(
-            source_bucket, s3_key, archive_bucket, lm_dt,
-        )
-    except FileNotFoundError as e:
-        insert_error_log(
-            run_id=run_id, file_id=file_id, s3_key=s3_key,
-            last_modified=last_modified, etag=etag, gcs_key=gcs_key,
-            attempt=attempt, error_class="S3_READ", error_detail=str(e),
-            retryable=True,
-            step="maintenance._try_transfer.get_s3_stream",
-        )
-        return
-    except Exception as e:
-        insert_error_log(
-            run_id=run_id, file_id=file_id, s3_key=s3_key,
-            last_modified=last_modified, etag=etag, gcs_key=gcs_key,
-            attempt=attempt, error_class="S3_READ", error_detail=str(e),
-            retryable=True,
-            step="maintenance._try_transfer.get_s3_stream",
-        )
-        return
-
-    try:
-        bytes_copied = stream_to_gcs(s3_stream, gcs_bucket, gcs_key, actual_size)
-    except Exception as e:
-        insert_error_log(
-            run_id=run_id, file_id=file_id, s3_key=s3_key,
-            last_modified=last_modified, etag=etag, gcs_key=gcs_key,
-            attempt=attempt, error_class="GCS_WRITE", error_detail=str(e),
-            retryable=True,
-            step="maintenance._try_transfer.stream_to_gcs",
-        )
-        return
-
-    archived = False
-    if pattern.get("archive_after_copy_enabled") and archive_bucket:
-        try:
-            self_archive(source_bucket, s3_key, archive_bucket, lm_dt)
-            archived = True
-        except Exception as e:
-            insert_error_log(
-                run_id=run_id, file_id=file_id, s3_key=s3_key,
-                last_modified=last_modified, etag=etag, gcs_key=gcs_key,
-                attempt=attempt, error_class="ARCHIVE", error_detail=str(e),
-                retryable=True,
-                step="maintenance._try_transfer.self_archive",
-            )
-            return
-
-    insert_success_log(
-        run_id=run_id, file_id=file_id, s3_key=s3_key,
-        last_modified=last_modified, etag=etag, gcs_key=gcs_key,
-        bytes_copied=bytes_copied, archived=archived,
-    )
-
-    logger.info("Maintenance transfer complete: %s -> gs://%s/%s", s3_key, gcs_bucket, gcs_key)
 
 
 # ── BQ client ────────────────────────────────────────────────────────────

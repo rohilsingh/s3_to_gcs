@@ -37,12 +37,15 @@ def _extract_records(event: dict) -> list[dict]:
         last_modified = event.get("time", "")
         etag = detail.get("object", {}).get("etag", "")
         size = detail.get("object", {}).get("size", 0)
+        detail_type = event.get("detail-type", "")
+        trigger = "maintenance" if detail_type == "MaintenanceRetry" else "eventbridge"
         return [{
             "source_bucket": bucket,
             "s3_key": key,
             "last_modified": last_modified,
             "etag": etag,
             "size_bytes": size,
+            "trigger_source": trigger,
         }]
 
     if "Records" in event:
@@ -55,6 +58,7 @@ def _extract_records(event: dict) -> list[dict]:
                 "last_modified": r.get("eventTime", ""),
                 "etag": s3_info.get("object", {}).get("eTag", ""),
                 "size_bytes": s3_info.get("object", {}).get("size", 0),
+                "trigger_source": "eventbridge",
             })
         return records
 
@@ -67,6 +71,7 @@ def _process_record(record: dict):
     last_modified = record["last_modified"]
     etag = record["etag"]
     size_bytes = record["size_bytes"]
+    trigger_source = record.get("trigger_source", "eventbridge")
 
     pattern = match_pattern(source_bucket, s3_key)
     if pattern is None:
@@ -92,7 +97,7 @@ def _process_record(record: dict):
     bq_ok = insert_run_log(
         run_id=run_id, file_id=file_id, s3_key=s3_key,
         last_modified=last_modified, etag=etag, size_bytes=size_bytes,
-        gcs_key=gcs_key, attempt=attempt, trigger_source="eventbridge",
+        gcs_key=gcs_key, attempt=attempt, trigger_source=trigger_source,
         predecessor_s3_key=pred_s3_key,
         predecessor_last_modified=pred_last_modified,
         started_at=started_at,
